@@ -4,6 +4,11 @@
   <title>Leaflet Map Pin Placement with Polygon</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <link
+  rel="stylesheet"
+  href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css"
+  />
+
   <style>
     body {
       margin: 0;
@@ -24,6 +29,14 @@
       flex-shrink: 0;
       border-bottom: 1px solid #ccc;
       position: relative;
+    }
+    #toolTitle {
+      font-weight: bold;
+      font-size: 1.2em;
+      text-align: center;
+      margin-bottom: 8px;
+      user-select: none;
+      color: #0078ff;
     }
     #addPinContainer button {
       display: block;
@@ -85,6 +98,16 @@
       color: white;
       border-color: #005fcc;
       font-weight: bold;
+    }
+    .pin-label {
+      font-size: 12px;
+      font-weight: bold;
+      color: #0078ff;
+      white-space: nowrap;
+      pointer-events: none; /* so labels don't catch mouse events */
+      user-select: none;
+      transform: translate(-50%, 0); /* center horizontally relative to marker */
+      box-shadow: 0 0 2px rgba(0, 120, 255, 0.8);
     }
     #map {
       flex-grow: 1;
@@ -159,11 +182,23 @@
       background-color: #999;
       cursor: not-allowed;
     }
+    #footerCopyright {
+      position: fixed;
+      bottom: 20px;
+      right: 10px;
+      font-size: 1.0em;
+      color: #666;
+      font-family: Arial, sans-serif;
+      user-select: none;
+      pointer-events: none; /* so it doesn't interfere with clicks */
+      z-index: 1000;
+    }
   </style>
 </head>
 <body>
   <div id="sidebar">
     <div id="addPinContainer">
+      <div id="toolTitle">GPS Fencing Tool V1.0</div>
       <button id="addPinBtn">Add Pin</button>
       <button id="exportBtn" disabled>Export As</button>
       <div id="warning" style="display:none;">The pins must be at least three</div>
@@ -196,8 +231,8 @@
       </form>
     </div>
   </div>
-
   <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
   <script>
     let map;
     let pinCount = 0;
@@ -205,6 +240,7 @@
     let pins = [];
     let highlightedPinId = null;
     let polygon = null;
+    let previewMarker = null;
 
     function initMap(lat, lng) {
       map = L.map('map').setView([lat, lng], 13);
@@ -214,9 +250,35 @@
         attribution: '© OpenStreetMap'
       }).addTo(map);
 
+      L.Control.geocoder({
+        defaultMarkGeocode: false
+      })
+      .on('markgeocode', function(e) {
+        const bbox = e.geocode.bbox;
+        const poly = L.polygon([
+          bbox.getSouthEast(),
+          bbox.getNorthEast(),
+          bbox.getNorthWest(),
+          bbox.getSouthWest()
+        ]);
+        map.fitBounds(poly.getBounds());
+      })
+      .addTo(map);
+      
       document.getElementById('addPinBtn').addEventListener('click', () => {
         isAddingPin = true;
         map.getContainer().style.cursor = 'crosshair';
+
+        if (!previewMarker) {
+          // Create preview marker at center or offscreen initially
+          previewMarker = L.marker(map.getCenter(), { 
+          opacity: 0.6,
+          interactive: false,
+          }).addTo(map);
+        }
+        // Update preview marker position on mouse move
+        map.on('mousemove', onMapMouseMove);
+
       });
 
       document.getElementById('exportBtn').addEventListener('click', openExportModal);
@@ -226,27 +288,60 @@
           addPin(e.latlng);
           isAddingPin = false;
           map.getContainer().style.cursor = '';
+        
+          if (previewMarker) {
+            map.removeLayer(previewMarker);
+            previewMarker = null;
+          }
+          // Remove the mousemove listener since we're no longer adding pins
+          map.off('mousemove', onMapMouseMove);
         }
       });
 
       updateWarningAndPolygon();
     }
 
+    function onMapMouseMove(e) {
+      if (previewMarker) {
+      previewMarker.setLatLng(e.latlng);
+      }
+    }
+
     function addPin(latlng) {
       pinCount++;
       const pinId = `pin_${pinCount}`;
+
       const marker = L.marker(latlng, { draggable: false }).addTo(map);
+
+      const labelIcon = L.divIcon({
+        className: 'pin-label',
+        html: pinId,
+        iconSize: null,
+        iconAnchor: [0, 0], // anchor at top-left, adjusted with CSS transform
+      });
+      // Place label marker at the same position as the pin
+      const labelMarker = L.marker([latlng.lat, latlng.lng], {
+        icon: labelIcon,
+        interactive: false // no mouse events
+      }).addTo(map);
 
       marker.bindPopup(() => createPopupContent(pinId, marker));
       marker.on('click', () => highlightPin(pinId));
+      // Move label marker along with main marker while dragging
+
+      marker.on('drag', () => {
+        const pos = marker.getLatLng();
+        labelMarker.setLatLng([pos.lat, pos.lng]);
+      });
 
       marker.on('dragend', () => {
         updatePinPopup(pinId);
         updatePinList();
         updateWarningAndPolygon();
+        marker.dragging.disable();
       });
 
-      pins.push({ id: pinId, marker });
+      pins.push({ id: pinId, marker, labelMarker});
       updatePinList();
       highlightPin(pinId);
       updateWarningAndPolygon();
@@ -265,12 +360,24 @@
 
       setTimeout(() => {
         container.querySelector('.move-btn').addEventListener('click', () => {
-          marker.dragging.enable();
-          marker.closePopup();
+          pins.forEach(p => {
+          p.marker.dragging.disable();
+        });
+
+        // Enable dragging only for the clicked pin
+        marker.dragging.enable();
+
+        marker.closePopup();
         });
 
         container.querySelector('.delete-btn').addEventListener('click', () => {
           map.removeLayer(marker);
+
+          const pinObj = pins.find(p => p.marker === marker);
+          if (pinObj && pinObj.labelMarker) {
+            map.removeLayer(pinObj.labelMarker);
+          }
+
           pins = pins.filter(p => p.marker !== marker);
           if (highlightedPinId === pinId) highlightedPinId = null;
           renumberPins();
@@ -290,10 +397,24 @@
         pinCount = index + 1;
         const newId = `pin_${pinCount}`;
         p.id = newId;
+
+        p.marker.unbindPopup();
         p.marker.bindPopup(() => createPopupContent(newId, p.marker));
         p.marker.off('click');
-        p.marker.on('click', () => highlightPin(newId));
+        p.marker.on('click', () => {
+          highlightPin(newId);
+          p.marker.openPopup();
+        });
+
+        const labelIcon = L.divIcon({
+          className: 'pin-label',
+          html: newId,
+          iconSize: null,
+          iconAnchor: [0, 0],
+        });
+        p.labelMarker.setIcon(labelIcon);
       });
+
       if (highlightedPinId) {
         const stillExists = pins.some(p => p.id === highlightedPinId);
         if (!stillExists) {
@@ -343,6 +464,7 @@
       if (pin) {
         const el = pin.marker.getElement();
         if (el) el.classList.add('highlight-marker');
+        pin.marker.openPopup();
       }
     }
 
@@ -457,5 +579,6 @@
       initMap(15.0, 120.0);
     }
   </script>
+  <div id="footerCopyright">© Livewen Dongallo, 2025</div>
 </body>
 </html>
