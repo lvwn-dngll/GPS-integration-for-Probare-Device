@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Leaflet Map Pin Placement with Polygon</title>
+  <title>GEO-Fencing Tool (v1.0)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
   <link
@@ -264,7 +264,7 @@
         map.fitBounds(poly.getBounds());
       })
       .addTo(map);
-      
+
       document.getElementById('addPinBtn').addEventListener('click', () => {
         isAddingPin = true;
         map.getContainer().style.cursor = 'crosshair';
